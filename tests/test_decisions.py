@@ -183,3 +183,91 @@ def test_the_verdict_trail_keeps_every_judgement_in_order(tmp_path: Path) -> Non
     assert [entry.value for entry in runtime.verdicts.entries(limit=2)] == [220.0, 230.0]
     assert runtime.verdicts.summary()["recorded"] == 4
     assert clock_of(runtime).now() == START
+
+
+def test_each_judgement_freezes_the_parameter_generation_it_was_taken_on(tmp_path: Path) -> None:
+    runtime = manual_runtime(tmp_path)
+    line = bring_up(runtime)
+    line.parts.jaw.sample_amps(210.0, runtime.clock.now(), "night-shift")
+    runtime.set_generation("jaw liner changed", "day-foreman")
+    line.parts.jaw.sample_amps(390.0, runtime.clock.now(), "day-shift")
+
+    history = runtime.verdicts.history(f"{DEFAULT_UNIT}.jaw")
+
+    assert [entry.generation for entry in history] == [1, 2]
+    assert [entry.value for entry in history] == [210.0, 390.0]
+    # The older record keeps its own generation even though the line moved on.
+    assert history[0].generation == 1
+    assert history[1].generation == 2
+    assert runtime.verdicts.generations() == [1, 2]
+
+
+def test_an_archived_judgement_keeps_its_bounds_and_its_breach_answer(tmp_path: Path) -> None:
+    runtime = manual_runtime(tmp_path)
+    line = bring_up(runtime)
+    line.parts.jaw.sample_amps(390.0, runtime.clock.now(), "test")
+    line.parts.jaw.sample_amps(210.0, runtime.clock.now(), "test")
+
+    high, ok = runtime.verdicts.history(f"{DEFAULT_UNIT}.jaw")
+
+    assert high.state == STATE_HIGH
+    assert high.basis == "jaw.current"
+    assert high.breached() is True
+    assert high.margin < 0.0
+    assert high.low is not None and high.high is not None
+    assert ok.breached() is False
+    # The trail can answer "which readings ever crossed" without the current
+    # verdict being able to overwrite the old one.
+    assert [entry.value for entry in runtime.verdicts.entries(breached=True)] == [390.0]
+    assert [entry.value for entry in runtime.verdicts.entries(breached=False, subject=f"{DEFAULT_UNIT}.jaw")] == [210.0]
+
+
+def test_the_trail_survives_a_restart_with_its_generations_intact(tmp_path: Path) -> None:
+    from tests.support import reload_runtime
+
+    runtime = manual_runtime(tmp_path)
+    line = bring_up(runtime)
+    line.parts.jaw.sample_amps(210.0, runtime.clock.now(), "test")
+    runtime.set_generation("tighter jaw band", "test")
+    line.parts.jaw.sample_amps(390.0, runtime.clock.now(), "test")
+
+    reloaded = reload_runtime(runtime)
+    history = reloaded.verdicts.history(f"{DEFAULT_UNIT}.jaw")
+
+    assert [entry.generation for entry in history] == [1, 2]
+    assert [entry.basis for entry in history] == ["jaw.current", "jaw.current"]
+    assert history[0].breached() is False
+    assert history[1].breached() is True
+
+
+def test_a_judgement_can_be_fetched_by_sequence_for_a_hand_over(tmp_path: Path) -> None:
+    runtime = manual_runtime(tmp_path)
+    line = bring_up(runtime)
+    recorded = line.parts.jaw.sample_amps(390.0, runtime.clock.now(), "night-shift")
+
+    entry = runtime.verdicts.get(runtime.verdicts.current()[f"{DEFAULT_UNIT}.jaw"].sequence)
+
+    assert entry.value == recorded["value"]
+    assert entry.generation == 1
+    assert entry.breached() is True
+    assert entry.actor == "night-shift"
+
+
+def test_a_voided_judgement_is_hidden_from_the_trail_but_kept_for_review(tmp_path: Path) -> None:
+    from crushplant.errors import RecordNotFound
+
+    runtime = manual_runtime(tmp_path)
+    line = bring_up(runtime)
+    line.parts.jaw.sample_amps(390.0, runtime.clock.now(), "test")
+    target = runtime.verdicts.current()[f"{DEFAULT_UNIT}.jaw"]
+
+    runtime.stream.tombstone(target.sequence, runtime.clock.now(), "operator", "logged against the spare line")
+
+    assert runtime.verdicts.entries(subject=f"{DEFAULT_UNIT}.jaw") == []
+    archived = runtime.verdicts.entries(subject=f"{DEFAULT_UNIT}.jaw", include_voided=True)
+    assert len(archived) == 1
+    assert archived[0].voided is True
+    assert archived[0].void_reason == "logged against the spare line"
+    assert archived[0].breached() is True
+    with pytest.raises(RecordNotFound):
+        runtime.verdicts.get(target.sequence)

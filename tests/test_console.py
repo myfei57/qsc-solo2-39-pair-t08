@@ -94,6 +94,42 @@ def test_the_audit_endpoint_applies_its_query_filters(tmp_path: Path) -> None:
     assert get(app, "/api/audit", outcome="blocked").payload["count"] == 0
 
 
+def test_the_verdicts_endpoint_keeps_each_generation_and_filters_the_trail(tmp_path: Path) -> None:
+    app = app_for(tmp_path)
+    runtime = app.runtime
+    from tests.support import advance, bring_up
+
+    line = bring_up(runtime)
+    line.parts.jaw.sample_amps(210.0, runtime.clock.now(), "night")
+    advance(runtime, 120.0)
+    first_at = runtime.clock.now().isoformat()
+    advance(runtime, 60.0)
+    runtime.set_generation("jaw band tightened", "day")
+    line.parts.jaw.sample_amps(390.0, runtime.clock.now(), "day")
+
+    listing = get(app, "/api/verdicts", subject=f"{DEFAULT_UNIT}.jaw")
+    history = listing.payload["history"]
+
+    assert [entry["generation"] for entry in history] == [1, 2]
+    assert [entry["breached"] for entry in history] == [False, True]
+    assert all(entry["basis"] == "jaw.current" for entry in history)
+
+    only_gen_two = get(app, "/api/verdicts", subject=f"{DEFAULT_UNIT}.jaw", generation="2")
+    assert [entry["value"] for entry in only_gen_two.payload["history"]] == [390.0]
+
+    breaches = get(app, "/api/verdicts", subject=f"{DEFAULT_UNIT}.jaw", breached="yes")
+    assert [entry["value"] for entry in breaches.payload["history"]] == [390.0]
+
+    point_in_time = get(app, "/api/verdicts", as_of=first_at)
+    assert point_in_time.payload["point_in_time"][f"{DEFAULT_UNIT}.jaw"]["value"] == 210.0
+    assert get(app, "/api/verdicts").payload["current"][f"{DEFAULT_UNIT}.jaw"]["value"] == 390.0
+
+    sequence = history[0]["sequence"]
+    one = get(app, f"/api/verdicts/{sequence}")
+    assert one.payload["entry"]["generation"] == 1
+    assert one.payload["entry"]["breached"] is False
+
+
 def test_the_write_endpoints_drive_a_whole_bring_up(tmp_path: Path) -> None:
     app = app_for(tmp_path)
     post(

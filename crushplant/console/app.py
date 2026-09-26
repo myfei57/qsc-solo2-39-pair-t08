@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ..audit.query import AuditQuery
+from ..audit.query import AuditQuery, optional_moment
 from ..belt.scale import ScalePoint
 from ..config import diff_configs, envelope_report, load_config
 from ..cone.calibrate import CurrentPoint
@@ -120,6 +120,7 @@ class ControlApp:
         router.get("/api/batches", self._batches, "batch registry")
         router.get("/api/records", self._records, "record stream and watermark")
         router.get("/api/verdicts", self._verdicts, "judgements")
+        router.get("/api/verdicts/{sequence}", self._verdict_one, "one judgement by sequence")
         router.get("/api/generations", self._generations, "generation history")
         router.get("/api/confirmations", self._confirmations, "confirmation slips")
         router.get("/api/baselines", self._baselines, "captured baselines")
@@ -257,13 +258,69 @@ class ControlApp:
 
     def _verdicts(self, request: Request) -> Response:
         verdicts = self.runtime.verdicts
-        return ok(
-            {
-                "summary": verdicts.summary(),
-                "current": {key: entry.as_dict() for key, entry in verdicts.current().items()},
-                "history": [entry.as_dict() for entry in verdicts.entries(limit=20)],
-            }
-        )
+        query = dict(request.query)
+        moment = self.runtime.clock.now()
+
+        def text_arg(key: str) -> str:
+            return str(query.get(key, "") or "").strip()
+
+        generation_raw = query.get("generation")
+        generation = None
+        if generation_raw not in (None, ""):
+            try:
+                generation = int(generation_raw)
+            except (TypeError, ValueError) as exc:
+                raise InvalidRequest("generation must be a whole number", value=generation_raw) from exc
+
+        breached = None
+        if query.get("breached") in ("1", "true", "yes"):
+            breached = True
+        elif query.get("breached") in ("0", "false", "no"):
+            breached = False
+
+        since = optional_moment(query.get("since"))
+        until = optional_moment(query.get("until"))
+        include_voided = query.get("include_voided") in ("1", "true", "yes")
+        limit = query_integer(request.query, "limit", 20)
+        filters = {
+            "subject": text_arg("subject"),
+            "unit": text_arg("unit"),
+            "basis": text_arg("basis"),
+            "generation": generation,
+            "breached": breached,
+            "include_voided": include_voided,
+        }
+        history = [
+            entry.as_dict()
+            for entry in verdicts.entries(limit=limit, **filters)
+            if (since is None or entry.moment() >= since)
+            and (until is None or entry.moment() <= until)
+        ]
+        payload: dict[str, Any] = {
+            "summary": verdicts.summary(),
+            "query": {
+                **filters,
+                "since": None if since is None else since.isoformat(),
+                "until": None if until is None else until.isoformat(),
+                "limit": limit,
+            },
+            "current": {key: entry.as_dict() for key, entry in verdicts.current().items()},
+            "history": history,
+        }
+        as_of_raw = query.get("as_of")
+        if as_of_raw not in (None, ""):
+            point = optional_moment(as_of_raw)
+            snapshot = verdicts.as_of(point)
+            payload["as_of"] = point.isoformat()
+            payload["point_in_time"] = {key: entry.as_dict() for key, entry in snapshot.items()}
+        return ok(payload)
+
+    def _verdict_one(self, request: Request) -> Response:
+        try:
+            sequence = int(request.params["sequence"])
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequest("a verdict sequence must be a whole number") from exc
+        return ok({"entry": self.runtime.verdicts.get(sequence).as_dict()})
 
     def _generations(self, request: Request) -> Response:
         return ok(

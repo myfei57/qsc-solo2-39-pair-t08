@@ -117,6 +117,27 @@ def records(runtime: Any) -> str:
         ["lines", "watermark", "visible", "pending", "voided"],
         [[summary["journal_lines"], watermark["sequence"], summary["visible"], summary["pending"], summary["voided"]]],
     )
+    body += "</section><section><h2>verdict trail (last 25)</h2>"
+    trail = runtime.verdicts.entries(limit=25)
+    body += _table(
+        ["sequence", "at", "unit", "subject", "basis", "gen", "state", "value", "margin", "breached", "actor"],
+        [
+            [
+                entry.sequence,
+                entry.at,
+                entry.unit,
+                entry.subject,
+                entry.basis,
+                entry.generation,
+                entry.state,
+                entry.value,
+                entry.margin,
+                "yes" if entry.breached() else "no",
+                entry.actor,
+            ]
+            for entry in trail
+        ],
+    )
     body += "</section><section><h2>ledger tail</h2>"
     body += _table(
         ["sequence", "at", "unit", "action", "outcome", "actor"],

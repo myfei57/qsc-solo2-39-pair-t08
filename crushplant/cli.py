@@ -153,6 +153,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub("batches", help="print the batch registry")
     verdicts = sub("verdicts", help="print recorded judgements")
+    verdicts.add_argument("--unit", default="")
+    verdicts.add_argument("--subject", default="")
+    verdicts.add_argument("--basis", default="", help="only judgements taken on this limit or rule")
+    verdicts.add_argument("--generation", type=int, default=None, help="only judgements frozen at this parameter generation")
+    verdicts.add_argument("--breached", choices=("yes", "no"), default=None, help="filter by whether the limit was crossed")
+    verdicts.add_argument("--include-voided", action="store_true", help="include tombstoned judgements with their reason")
+    verdicts.add_argument("--all", action="store_true", help="print the full trail instead of the last entries")
     verdicts.add_argument("--limit", type=int, default=20)
     sub("generations", help="print the generation history")
     sub("confirmations", help="print confirmation slips")
@@ -481,11 +488,29 @@ def _batches(runtime: Runtime, args: argparse.Namespace) -> int:
 
 def _verdicts(runtime: Runtime, args: argparse.Namespace) -> int:
     verdicts = runtime.verdicts
+    entries = verdicts.entries(
+        subject=args.subject,
+        unit=args.unit,
+        basis=args.basis,
+        generation=args.generation,
+        breached=None if args.breached is None else args.breached == "yes",
+        limit=None if args.all else args.limit,
+        include_voided=args.include_voided,
+    )
     _emit(
         {
             "summary": verdicts.summary(),
+            "query": {
+                "unit": args.unit,
+                "subject": args.subject,
+                "basis": args.basis,
+                "generation": args.generation,
+                "breached": args.breached,
+                "include_voided": args.include_voided,
+                "limit": None if args.all else args.limit,
+            },
             "current": {key: entry.as_dict() for key, entry in verdicts.current().items()},
-            "history": [entry.as_dict() for entry in verdicts.entries(limit=args.limit)],
+            "history": [entry.as_dict() for entry in entries],
         }
     )
     return 0
