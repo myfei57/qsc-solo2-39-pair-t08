@@ -257,11 +257,21 @@ class ControlApp:
 
     def _verdicts(self, request: Request) -> Response:
         verdicts = self.runtime.verdicts
+        limit = query_integer(request.query, "limit", 20)
+        generation = query_integer(request.query, "generation", 0) if "generation" in request.query else None
         return ok(
             {
                 "summary": verdicts.summary(),
                 "current": {key: entry.as_dict() for key, entry in verdicts.current().items()},
-                "history": [entry.as_dict() for entry in verdicts.entries(limit=20)],
+                "history": [
+                    entry.as_dict()
+                    for entry in verdicts.entries(
+                        subject=request.query.get("subject", ""),
+                        unit=request.query.get("unit", ""),
+                        generation=generation,
+                        limit=limit,
+                    )
+                ],
             }
         )
 

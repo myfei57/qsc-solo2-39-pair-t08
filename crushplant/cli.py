@@ -153,6 +153,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub("batches", help="print the batch registry")
     verdicts = sub("verdicts", help="print recorded judgements")
+    verdicts.add_argument("--unit", default="")
+    verdicts.add_argument("--subject", default="")
+    verdicts.add_argument("--generation", type=int, default=None)
     verdicts.add_argument("--limit", type=int, default=20)
     sub("generations", help="print the generation history")
     sub("confirmations", help="print confirmation slips")
@@ -485,7 +488,15 @@ def _verdicts(runtime: Runtime, args: argparse.Namespace) -> int:
         {
             "summary": verdicts.summary(),
             "current": {key: entry.as_dict() for key, entry in verdicts.current().items()},
-            "history": [entry.as_dict() for entry in verdicts.entries(limit=args.limit)],
+            "history": [
+                entry.as_dict()
+                for entry in verdicts.entries(
+                    subject=args.subject,
+                    unit=args.unit,
+                    generation=args.generation,
+                    limit=args.limit,
+                )
+            ],
         }
     )
     return 0

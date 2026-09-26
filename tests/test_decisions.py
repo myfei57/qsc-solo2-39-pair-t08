@@ -8,6 +8,7 @@ import pytest
 
 from crushplant.errors import InvalidRequest
 from crushplant.store.documents import DocumentStore
+from crushplant.verdict.log import VERDICT_KIND
 from crushplant.verdict.threshold import STATE_HIGH, STATE_LOW, STATE_OK, Limit, judge
 from crushplant.verdict.window import WINDOW_CLEAR, WINDOW_HELD, WINDOW_HOLDING, ABOVE, WindowJudge
 from tests.support import DEFAULT_UNIT, START, bring_up, clock_of, manual_runtime
@@ -183,3 +184,57 @@ def test_the_verdict_trail_keeps_every_judgement_in_order(tmp_path: Path) -> Non
     assert [entry.value for entry in runtime.verdicts.entries(limit=2)] == [220.0, 230.0]
     assert runtime.verdicts.summary()["recorded"] == 4
     assert clock_of(runtime).now() == START
+
+
+def test_every_judgement_keeps_the_generation_it_was_made_under(tmp_path: Path) -> None:
+    runtime = manual_runtime(tmp_path)
+    line = bring_up(runtime)
+    line.parts.jaw.sample_amps(200.0, runtime.clock.now(), "test")
+
+    runtime.set_generation("product target moved", "engineer")
+    line.parts.jaw.sample_amps(390.0, runtime.clock.now(), "test")
+
+    history = runtime.verdicts.history(f"{DEFAULT_UNIT}.jaw")
+    assert [entry.generation for entry in history] == [1, 2]
+    assert [entry.state for entry in history] == [STATE_OK, STATE_HIGH]
+    # The newer record never touches the older one: each still carries the
+    # window it was judged against.
+    assert [(entry.detail["low"], entry.detail["high"]) for entry in history] == [(90.0, 380.0), (90.0, 380.0)]
+    assert runtime.verdicts.current()[f"{DEFAULT_UNIT}.jaw"].generation == 2
+
+
+def test_judgements_can_be_dug_up_by_unit_and_generation(tmp_path: Path) -> None:
+    runtime = manual_runtime(tmp_path)
+    line = bring_up(runtime)
+    line.parts.jaw.sample_amps(200.0, runtime.clock.now(), "test")
+    runtime.set_generation("liner changed", "engineer")
+    line.parts.jaw.sample_amps(210.0, runtime.clock.now(), "test")
+
+    first = runtime.verdicts.entries(unit=DEFAULT_UNIT, generation=1)
+    second = runtime.verdicts.entries(unit=DEFAULT_UNIT, generation=2)
+
+    assert first
+    assert second
+    assert {entry.generation for entry in first} == {1}
+    assert {entry.generation for entry in second} == {2}
+    jaw = runtime.verdicts.entries(subject=f"{DEFAULT_UNIT}.jaw", generation=1)
+    assert [entry.value for entry in jaw] == [200.0]
+
+
+def test_a_judgement_written_before_generation_tracking_reads_as_zero(tmp_path: Path) -> None:
+    runtime = manual_runtime(tmp_path)
+    moment = runtime.clock.now()
+    runtime.stream.stage(
+        VERDICT_KIND,
+        moment,
+        unit=DEFAULT_UNIT,
+        actor="archive",
+        subject=f"{DEFAULT_UNIT}.jaw",
+        payload={"name": "jaw.current", "state": "ok", "value": 200.0, "detail": {"basis": "jaw.current"}},
+    )
+    runtime.stream.commit(moment, "archive")
+
+    entry = runtime.verdicts.history(f"{DEFAULT_UNIT}.jaw")[0]
+
+    assert entry.generation == 0
+    assert entry.detail["basis"] == "jaw.current"

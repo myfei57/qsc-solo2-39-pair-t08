@@ -150,3 +150,26 @@ def test_the_records_endpoint_returns_the_watermark_trail(tmp_path: Path) -> Non
     assert response.payload["summary"]["watermark"]["sequence"] >= 1
     assert response.payload["watermark_history"][-1]["event"] == "commit"
     assert response.payload["history"][-1]["kind"] == "audit"
+
+
+def test_the_verdicts_endpoint_filters_history_by_unit_subject_and_generation(tmp_path: Path) -> None:
+    app = app_for(tmp_path)
+    post(app, f"/api/units/{DEFAULT_UNIT}/amps", {"amps": 200.0})
+    post(app, "/api/generation", {"reason": "liner changed"})
+    post(app, f"/api/units/{DEFAULT_UNIT}/amps", {"amps": 390.0})
+
+    everything = get(app, "/api/verdicts", limit="100").payload["history"]
+    assert [entry["generation"] for entry in everything] == [1, 2]
+    assert [entry["state"] for entry in everything] == ["ok", "high"]
+
+    filtered = get(
+        app,
+        "/api/verdicts",
+        unit=DEFAULT_UNIT,
+        subject=f"{DEFAULT_UNIT}.jaw",
+        generation="1",
+    ).payload["history"]
+
+    assert [entry["value"] for entry in filtered] == [200.0]
+    assert filtered[0]["detail"]["basis"] == "jaw.current"
+    assert filtered[0]["detail"]["high"] == 380.0

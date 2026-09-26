@@ -15,7 +15,11 @@ VERDICT_KIND = "verdict"
 
 @dataclass(frozen=True)
 class VerdictEntry:
-    """One judgement as it was written to the record stream."""
+    """One judgement as it was written to the record stream.
+
+    ``generation`` is the parameter generation the judgement was made under;
+    a zero means the record predates generation tracking and cannot be placed.
+    """
 
     sequence: int
     at: str
@@ -24,6 +28,7 @@ class VerdictEntry:
     name: str
     state: str
     value: float
+    generation: int
     actor: str
     detail: dict[str, Any]
 
@@ -42,6 +47,7 @@ class VerdictEntry:
             "name": self.name,
             "state": self.state,
             "value": self.value,
+            "generation": self.generation,
             "actor": self.actor,
             "detail": self.detail,
         }
@@ -52,7 +58,10 @@ class VerdictLog:
 
     ``current`` answers "what does the line say now", while ``history`` answers
     "what did it say along the way".  The two are deliberately different calls
-    so a report cannot present an archived judgement as a live one.
+    so a report cannot present an archived judgement as a live one.  Every
+    record is stamped with the parameter generation in force when it was
+    written, so a later judgement never has to overwrite an earlier one for
+    the pair to be told apart.
     """
 
     def __init__(self, stream: RecordStream, generation_of: Callable[[], int] | None = None) -> None:
@@ -80,6 +89,7 @@ class VerdictLog:
             "name": name.strip(),
             "state": state,
             "value": float(value),
+            "generation": self._generation_of(),
             "detail": dict(detail),
         }
         record = self._stream.stage(
@@ -143,7 +153,13 @@ class VerdictLog:
             **detail,
         )
 
-    def entries(self, subject: str = "", unit: str = "", limit: int | None = None) -> list[VerdictEntry]:
+    def entries(
+        self,
+        subject: str = "",
+        unit: str = "",
+        generation: int | None = None,
+        limit: int | None = None,
+    ) -> list[VerdictEntry]:
         selected = [
             self._entry(record)
             for record in self._stream.visible()
@@ -151,6 +167,8 @@ class VerdictLog:
             and (not subject or record.subject == subject)
             and (not unit or record.unit == unit)
         ]
+        if generation is not None:
+            selected = [entry for entry in selected if entry.generation == int(generation)]
         if limit is None:
             return selected
         if limit < 0:
@@ -168,6 +186,38 @@ class VerdictLog:
             newest[entry.subject] = entry
         return newest
 
+    def as_of(self, moment: datetime, subject: str = "") -> dict[str, VerdictEntry]:
+        """The newest judgement per subject as the trail stood at ``moment``.
+
+        This is the shift-handover view: what the line had last said about
+        each subject at an earlier instant, rebuilt from the records that were
+        already written by then.
+        """
+
+        newest: dict[str, VerdictEntry] = {}
+        for entry in self.entries(subject=subject):
+            if entry.moment() <= moment:
+                newest[entry.subject] = entry
+        return newest
+
+    def by_basis(self, basis: str, unit: str = "") -> list[VerdictEntry]:
+        """Every judgement taken on one basis, newest last."""
+
+        label = basis.strip()
+        if not label:
+            raise InvalidRequest("a basis query needs a name")
+        return [entry for entry in self.entries(unit=unit) if entry.detail.get("basis") == label]
+
+    def bases(self) -> list[str]:
+        """The distinct bases the recorded judgements were taken on."""
+
+        return sorted({str(entry.detail["basis"]) for entry in self.entries() if "basis" in entry.detail})
+
+    def generations(self) -> list[int]:
+        """The parameter generations the recorded judgements were made under."""
+
+        return sorted({entry.generation for entry in self.entries()})
+
     def counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
         for entry in self.entries():
@@ -179,6 +229,7 @@ class VerdictLog:
             "recorded": len(self.entries()),
             "subjects": sorted(self.current()),
             "states": self.counts(),
+            "bases": self.bases(),
         }
 
     @staticmethod
@@ -193,6 +244,7 @@ class VerdictLog:
             name=str(payload.get("name", "")),
             state=str(payload.get("state", "")),
             value=float(payload.get("value", 0.0)),
+            generation=int(payload.get("generation", 0)),
             actor=record.actor,
             detail=dict(detail) if isinstance(detail, dict) else {},
         )
